@@ -1,0 +1,24 @@
+# simulation cam
+
+A single-file webcam toy that renders "the tracking layer of the simulation" over your camera feed: a swarm of incrementing ID labels, bounding boxes, and link lines that cling to whatever is moving in frame — the machine-vision overlay aesthetic, without any actual machine vision. Everything runs locally in the browser; the video never leaves your device.
+
+Live at https://vaibhavgit9210.github.io/weliveinamatrix/ (also deployed as a copy at https://vaibhavgit9210.github.io/simulation-cam/, part of the portfolio arcade).
+
+## How it works
+
+There is no ML model. The "object tracking" is frame differencing:
+
+- Each camera frame is drawn cover-cropped to a fullscreen canvas (mirrored for the front camera), then downsampled to a ~176-cell-wide luminance grid.
+- The grid is diffed against the previous frame; cells that changed enough (with a neighbor-confirmation check to filter sensor noise) count as motion. Calm scenes fall back to static edge "feature" points so the overlay never goes fully quiet.
+- Tracker density follows the amount of motion: labels spawn on motion cells (one per coarse screen region so they scatter instead of piling up), drift with a nervous jitter, and decay fast once their neighborhood goes still.
+- Trackers come in three kinds — plain ID tags (with a small corner tick), outlined boxes, and filled label chips — plus occasional teal ones. IDs only ever count up. New trackers are sometimes wired to older ones with thin link lines, forming the web.
+
+A flip button switches between front and rear cameras on phones. The page also sends an anonymous visit beacon (page loads and presence heartbeats, no cookies, disabled on `file://`/localhost) to a Cloudflare Worker.
+
+## Running locally
+
+No build step, no dependencies — one `index.html`.
+
+Open `index.html` directly in a browser (the camera API requires `https://` or `file://`, not plain `http://`) and click **OPEN CAMERA**.
+
+For headless testing/screenshots, append `?test` to the URL: the camera is skipped and a synthetic moving pattern drives the tracker overlay instead.

@@ -20,9 +20,19 @@ Deployment targets are iOS 16 and macOS 13. Swift 5, no third-party code.
 
 ## What it does
 
-Same as the web build. Tap **OPEN CAMERA**, and the tracking layer of the
-simulation is drawn over whatever the camera sees: incrementing ID labels,
-bounding boxes, filled chips and link lines, clinging to whatever moves.
+Same as the web build. Tap **OPEN CAMERA**, and the app works out what the frame
+is *about*, locks onto every instance of that one thing, and floods those locks
+with numbers:
+
+| in frame | mode | what you get |
+|---|---|---|
+| a face, a hand, a bird, a cat | `LIVING` | a corner-bracket box on the whole subject, class and id, a scan line, the flood inside the box, link lines between face and hand |
+| a shaft of light with dust in it | `TYNDALL` | the shaft's silhouette flooded with numbers, clipped to the beam, nothing else marked |
+| bees, ants, dust | `SWARM` | one small box and one id each, with a web of lines |
+| one moving thing, no class | `OBJECT` | a single lock |
+
+How busy it gets follows how much chaos is in the frame. The readout in the
+corner names the class, the live locks and marks, and the chaos figure.
 
 The button in the bottom right corner switches between the front and back
 cameras, and only appears when the device has both — that rules out most Macs.
@@ -30,17 +40,18 @@ The screen is kept awake while the camera is live, and the camera is handed back
 to the system whenever the app goes to the background.
 
 Nothing is recorded, nothing is written to disk, nothing leaves the device. The
-only thing a frame is used for is a 176-cell-wide luminance grid, which is
-thrown away as soon as the next one arrives.
+only thing a frame is used for is a grid of luminance and skin flags — around
+thirty thousand cells, whatever the shape of the screen — which is thrown away as
+soon as the next one arrives.
 
 ## How it is put together
 
 | file | |
 |---|---|
-| `TrackerSim.swift` | the whole tracker cloud, with no drawing in it |
-| `Glyphs.swift` | the digit strip and the white pixel, rendered once |
+| `TrackerSim.swift` | the detector, the classifier and the tracker, with no drawing in it |
+| `Glyphs.swift` | the glyph strip (digits and capitals) and the white pixel, rendered once |
 | `TrackerScene.swift` | SpriteKit scene, sprite pools, the overlay |
-| `CameraFeed.swift` | capture session, and frame to motion grid |
+| `CameraFeed.swift` | capture session, and frame to luminance and skin grids |
 | `CameraPreview.swift` | the preview layer, wrapped for SwiftUI |
 | `CamController.swift` | the only thing SwiftUI observes |
 | `ContentView.swift` | the start card and the flip button |
@@ -59,7 +70,7 @@ python3 tools/make_icon.py     # needs pillow
 It writes opaque RGB at every size the catalog asks for; iOS rejects app icons
 that carry an alpha channel.
 
-Four things are worth knowing if you read the code.
+Five things are worth knowing if you read the code.
 
 **The rotation and the mirroring are the capture connections' job.** The preview
 connection and the data-output connection are always set to the same orientation
@@ -70,10 +81,14 @@ for the sampler is the centre crop, because the preview fills the view and throw
 the overflow away, so the grid has to cover that same rectangle and no more.
 
 **The overlay is two textures.** Every line, box edge and label chip is one white
-pixel stretched and tinted; every digit is cut out of one 10-digit strip. Sprites
-that share a texture get batched, so 450 labels cost a couple of draw calls.
-Rendering each label as its own text texture would mean 450 of them, plus a
-rasterisation for every new tracker.
+pixel stretched and tinted; every character is cut out of one glyph strip.
+Sprites that share a texture get batched, so hundreds of labels cost a couple of
+draw calls. Rendering each label as its own text texture would mean one draw call
+each, plus a rasterisation for every new lock.
+
+**The ink is chosen from the frame.** White labels vanish on a bright beam or a
+pale wall, and half of what this gets pointed at is bright, so each mark asks the
+luminance grid what is under it and goes dark instead.
 
 **Coordinates keep the web convention** inside the simulation: origin top left, y
 growing *downward*. `TrackerScene.flip` flips the sign once when it places a
@@ -91,10 +106,12 @@ Stepping on arrival costs half as much and looks the same.
   which does not exist on iOS.
 - Luminance comes from the frame's own luma plane on iOS (from the pixels on
   macOS, where BGRA is the safe format to ask for) instead of a canvas readback.
-- Unlike `bonfire`, this port is **not** numerically identical to the web build.
-  It cannot be: `index.html` draws from `Math.random`, which cannot be seeded, so
-  there is no shared stream to compare against. What was checked instead is that
-  the two agree on behaviour and on distributions — see below.
+- Both builds now draw from the same `mulberry32` in the same order, so a seed
+  means the same thing in each. That is deliberate, but it is **not** the
+  checksum-level parity `bonfire` has: the two sample their grids by different
+  routes — a canvas readback there, a capture buffer here — so identical inputs
+  cannot be arranged, and none was claimed. What was checked is that both builds
+  reach the same class on the same scene and draw it the same way.
 
 ## Honest note on verification
 
@@ -102,14 +119,21 @@ This was written on a machine with only the Command Line Tools, no Xcode. So:
 
 - every Swift file typechecks against the macOS SDK
 - `TrackerSim` and `CameraFeed.grid` were compiled and run against synthetic
-  frames: the grid's centre crop and mirroring land where the preview would put
-  them, both pixel formats read the same picture, the cloud follows a moving
-  subject and decays over a still one, ids only count up, the caps hold, a seed
-  reproduces a run exactly, and the kind mix comes out 0.78 / 0.17 / 0.04 against
-  the web build's 0.78 / 0.18 / 0.04
-- the overlay itself was rendered offscreen through `SKRenderer` and compared
-  against the web build by eye: ticks, boxes, teal labels, the black knock-out
-  digits on a filled chip, the link lines
+  frames — 36 checks, all passing. The ones worth naming: the grid stays inside
+  its cell budget in both portrait and landscape while keeping square cells; the
+  centre crop and the mirroring land where the preview would put them; a skin
+  tone fills the mask while a warm white beam and a grey wall do not; the phone's
+  biplanar chroma finds the same skin region as the Mac's BGRA; a still face plus
+  a moving hand gives exactly two locks named FACE and HAND, with the FACE box
+  covering the whole face rather than a fragment; every mark of the flood is
+  inside the lock it belongs to; twenty small movers give a SWARM with a lock
+  each and no flood; dust in a shaft gives TYNDALL with no other locks, 150-odd
+  marks, and not one of them outside the shaft; a still scene falls back to one
+  OBJECT; a change of class leaves none of the old locks alive; and a seed
+  reproduces a run exactly
+- the overlay itself was rendered offscreen through `SKRenderer` for all four
+  modes, over the frame's own luminance so the adaptive ink could be checked too,
+  and compared against the web build's screenshots by eye
 - `project.pbxproj` parses as a plist and its object graph was checked
   programmatically: no dangling references, all eight sources in the Sources
   phase, correct product type, Debug and Release present, every icon the catalog

@@ -8,24 +8,31 @@ import UIKit
 import AppKit
 #endif
 
-/// The ten digits, rendered once into a single strip.
+/// One strip holding every character the overlay can draw.
 ///
-/// The IDs are drawn as digit sprites cut out of this one texture, which is the
+/// Labels are drawn as glyph sprites cut out of this one texture, which is the
 /// only reason the overlay is cheap: sprites that share a texture get batched,
-/// so 450 labels cost a couple of draw calls. Giving every label its own text
-/// texture would mean 450 of them, plus a rasterisation for each new tracker.
+/// so hundreds of labels cost a couple of draw calls. Giving every label its own
+/// text texture would mean one draw call each, plus a rasterisation per lock.
 struct DigitAtlas {
+
+    /// Digits for the ids, capitals for the class names and the readout.
+    static let characters = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ .%x-:")
 
     /// Rendered at this point size; a sprite scales by `size / fontSize`.
     let fontSize: CGFloat
     /// Cell height, and how far the baseline sits above the cell bottom.
     let cellHeight: CGFloat
     let descent: CGFloat
-    /// Per digit: the cut-out texture, the pen advance, and the width of the
-    /// cell that texture covers. All in atlas points.
+    /// Per character, in the order of `characters`: the cut-out texture, the pen
+    /// advance, and the width of the cell that texture covers, in atlas points.
     let digits: [SKTexture]
     let advances: [CGFloat]
     let cellWidths: [CGFloat]
+    /// Character to index in the arrays above.
+    let index: [Character: Int]
+
+    func slot(_ c: Character) -> Int? { index[c] }
 
     static func condensedFont(size: CGFloat) -> CTFont {
         #if os(iOS)
@@ -40,11 +47,15 @@ struct DigitAtlas {
     static func build(fontSize: CGFloat = 36) -> DigitAtlas {
         let font = condensedFont(size: fontSize)
 
-        var chars = Array("0123456789".utf16)
-        var glyphs = [CGGlyph](repeating: 0, count: 10)
-        CTFontGetGlyphsForCharacters(font, &chars, &glyphs, 10)
-        var sizes = [CGSize](repeating: .zero, count: 10)
-        CTFontGetAdvancesForGlyphs(font, .horizontal, &glyphs, &sizes, 10)
+        let set = characters
+        let count = set.count
+        var chars = Array(String(set).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: count)
+        CTFontGetGlyphsForCharacters(font, &chars, &glyphs, count)
+        var sizes = [CGSize](repeating: .zero, count: count)
+        CTFontGetAdvancesForGlyphs(font, .horizontal, &glyphs, &sizes, count)
+        var index: [Character: Int] = [:]
+        for (i, c) in set.enumerated() { index[c] = i }
 
         let ascent = CTFontGetAscent(font)
         let descent = CTFontGetDescent(font)
@@ -54,7 +65,7 @@ struct DigitAtlas {
         // gap between cells, so no mip level bleeds a neighbour in
         let pad: CGFloat = 4
 
-        let stripW = Int(cellW.reduce(0, +) + pad * 10)
+        let stripW = Int(cellW.reduce(0, +) + pad * CGFloat(count))
         let stripH = Int(cellH)
         let scale: CGFloat = 2
         let pxW = stripW * Int(scale), pxH = stripH * Int(scale)
@@ -64,8 +75,8 @@ struct DigitAtlas {
                                   bytesPerRow: 0, space: space,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             return DigitAtlas(fontSize: fontSize, cellHeight: cellH, descent: descent,
-                              digits: Array(repeating: SKTexture(), count: 10),
-                              advances: advances, cellWidths: cellW)
+                              digits: Array(repeating: SKTexture(), count: count),
+                              advances: advances, cellWidths: cellW, index: index)
         }
         ctx.scaleBy(x: scale, y: scale)
         ctx.setFillColor(gray: 1, alpha: 1)
@@ -73,7 +84,7 @@ struct DigitAtlas {
 
         var pen: CGFloat = 0
         var rects: [CGRect] = []
-        for d in 0..<10 {
+        for d in 0..<count {
             var glyph = glyphs[d]
             var at = CGPoint(x: pen, y: descent)
             CTFontDrawGlyphs(font, &glyph, &at, 1, ctx)
@@ -83,8 +94,8 @@ struct DigitAtlas {
 
         guard let image = ctx.makeImage() else {
             return DigitAtlas(fontSize: fontSize, cellHeight: cellH, descent: descent,
-                              digits: Array(repeating: SKTexture(), count: 10),
-                              advances: advances, cellWidths: cellW)
+                              digits: Array(repeating: SKTexture(), count: count),
+                              advances: advances, cellWidths: cellW, index: index)
         }
         let sheet = SKTexture(cgImage: image)
         sheet.usesMipmaps = true
@@ -96,7 +107,7 @@ struct DigitAtlas {
                       in: sheet)
         }
         return DigitAtlas(fontSize: fontSize, cellHeight: cellH, descent: descent,
-                          digits: digits, advances: advances, cellWidths: cellW)
+                          digits: digits, advances: advances, cellWidths: cellW, index: index)
     }
 
     /// A 1x1 white pixel: every line, box edge and label chip is this one

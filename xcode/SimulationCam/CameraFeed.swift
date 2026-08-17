@@ -27,11 +27,12 @@ final class CameraFeed: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private(set) var position: AVCaptureDevice.Position = .front
 
-    /// Handed a fresh grid on the capture queue.
-    var onGrid: (([UInt8]) -> Void)?
+    /// Handed a fresh frame on the capture queue.
+    var onFrame: ((FrameGrid) -> Void)?
 
     /// Grid shape. Written from the main thread, read on the capture queue, so
     /// both go through `queue`.
+    private var gridWidth = CFG.gridMin
     private var gridHeight = 24
     /// Only used when a connection refuses to mirror for us.
     private var mirrorInSoftware = false
@@ -153,8 +154,11 @@ final class CameraFeed: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         return list
     }
 
-    func setGridHeight(_ h: Int) {
-        queue.async { self.gridHeight = max(2, h) }
+    func setGrid(width w: Int, height h: Int) {
+        queue.async {
+            self.gridWidth = max(2, w)
+            self.gridHeight = max(2, h)
+        }
     }
 
     // MARK: - Frames
@@ -175,17 +179,21 @@ final class CameraFeed: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ out: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let gw = TrackerSim.gridWidth
-        let gh = gridHeight
-        guard let grid = Self.grid(from: buffer, width: gw, height: gh, mirrored: mirrorInSoftware)
-        else { return }
-        onGrid?(grid)
+        guard let frame = Self.grid(from: buffer, width: gridWidth, height: gridHeight,
+                                    mirrored: mirrorInSoftware) else { return }
+        onFrame?(frame)
     }
 
-    /// Box-averages the frame's luminance down to a `width` x `height` grid,
-    /// over the centre crop the preview layer actually shows.
+    /// Box-averages the frame down to a `width` x `height` grid of luminance and
+    /// skin flags, over the centre crop the preview layer actually shows.
+    ///
+    /// The skin test is the same chroma box the web build uses, which is the whole
+    /// reason it is worth carrying chroma at all: a face is a colour before it is a
+    /// shape, and a chroma rule holds across skin tones where a brightness rule
+    /// does not. On the phone the chroma arrives for free in the second plane; on
+    /// the Mac it is computed from the pixels.
     static func grid(from buffer: CVPixelBuffer, width gw: Int, height gh: Int,
-                     mirrored: Bool) -> [UInt8]? {
+                     mirrored: Bool) -> FrameGrid? {
         guard gw > 1, gh > 1 else { return nil }
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
@@ -203,6 +211,17 @@ final class CameraFeed: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         // BGRA in memory order, so blue is first
         let pixelBytes = planar ? 1 : 4
 
+        // the interleaved Cb/Cr plane, at half the luma resolution
+        var chroma: UnsafeMutablePointer<UInt8>? = nil
+        var chromaRow = 0, chromaW = 0, chromaH = 0
+        if planar, CVPixelBufferGetPlaneCount(buffer) > 1,
+           let cbase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) {
+            chroma = cbase.assumingMemoryBound(to: UInt8.self)
+            chromaRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+            chromaW = CVPixelBufferGetWidthOfPlane(buffer, 1)
+            chromaH = CVPixelBufferGetHeightOfPlane(buffer, 1)
+        }
+
         // cover crop: the preview fills the view and throws the overflow away,
         // so the grid has to cover the same rectangle and nothing more
         let viewAspect = Double(gw) / Double(gh)
@@ -219,29 +238,64 @@ final class CameraFeed: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         let taps = max(1, min(3, Int(min(cellW, cellH))))
         let step = 1.0 / Double(taps)
 
-        var grid = [UInt8](repeating: 0, count: gw * gh)
-        grid.withUnsafeMutableBufferPointer { out in
-            for gy in 0..<gh {
-                for gx in 0..<gw {
-                    let sx = mirrored ? gw - 1 - gx : gx
-                    var sum = 0
-                    for ty in 0..<taps {
-                        let py = min(vh - 1, Int(y0 + (Double(gy) + (Double(ty) + 0.5) * step) * cellH))
-                        let row = bytes + py * rowBytes
-                        for tx in 0..<taps {
-                            let px = min(vw - 1, Int(x0 + (Double(sx) + (Double(tx) + 0.5) * step) * cellW))
-                            if planar {
-                                sum += Int(row[px])
-                            } else {
-                                let p = row + px * pixelBytes
-                                sum += (Int(p[2]) * 3 + Int(p[1]) * 4 + Int(p[0])) >> 3
+        var luma = [UInt8](repeating: 0, count: gw * gh)
+        var skin = [UInt8](repeating: 0, count: gw * gh)
+        luma.withUnsafeMutableBufferPointer { lout in
+            skin.withUnsafeMutableBufferPointer { sout in
+                for gy in 0..<gh {
+                    for gx in 0..<gw {
+                        let sx = mirrored ? gw - 1 - gx : gx
+                        var sum = 0, skinTaps = 0
+                        for ty in 0..<taps {
+                            let fy = y0 + (Double(gy) + (Double(ty) + 0.5) * step) * cellH
+                            let py = min(vh - 1, max(0, Int(fy)))
+                            let row = bytes + py * rowBytes
+                            for tx in 0..<taps {
+                                let fx = x0 + (Double(sx) + (Double(tx) + 0.5) * step) * cellW
+                                let px = min(vw - 1, max(0, Int(fx)))
+                                let y: Double, cb: Double, cr: Double
+                                if planar {
+                                    y = Double(row[px])
+                                    if let chroma, chromaW > 0, chromaH > 0 {
+                                        let cy = min(chromaH - 1, py / 2)
+                                        let cx = min(chromaW - 1, px / 2)
+                                        let c = chroma + cy * chromaRow + cx * 2
+                                        cb = Double(c[0]); cr = Double(c[1])
+                                    } else {
+                                        cb = 128; cr = 128
+                                    }
+                                } else {
+                                    let p = row + px * pixelBytes
+                                    let b = Double(p[0]), g = Double(p[1]), r = Double(p[2])
+                                    y = Double((Int(r) * 3 + Int(g) * 4 + Int(b)) >> 3)
+                                    cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b
+                                    cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b
+                                }
+                                sum += Int(y)
+                                if y > CFG.skinLumaLo && y < CFG.skinLumaHi
+                                    && cb >= CFG.skinCbLo && cb <= CFG.skinCbHi
+                                    && cr >= CFG.skinCrLo && cr <= CFG.skinCrHi
+                                    && cr - cb >= CFG.skinDiff {
+                                    skinTaps += 1
+                                }
                             }
                         }
+                        let total = taps * taps
+                        lout[gy * gw + gx] = UInt8(sum / total)
+                        // a cell is skin when most of what was sampled in it was
+                        sout[gy * gw + gx] = skinTaps * 2 > total ? 1 : 0
                     }
-                    out[gy * gw + gx] = UInt8(sum / (taps * taps))
                 }
             }
         }
-        return grid
+        return FrameGrid(width: gw, height: gh, luma: luma, skin: skin)
     }
+}
+
+/// One frame, reduced to the two things the detector needs.
+struct FrameGrid {
+    let width: Int
+    let height: Int
+    let luma: [UInt8]
+    let skin: [UInt8]
 }

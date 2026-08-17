@@ -24,217 +24,915 @@
 <button id="flip" title="flip camera">&#8646;</button>
 <div id="start">
   <h1>SIMULATION CAM</h1>
-  <p>OPENS YOUR CAMERA AND RENDERS THE TRACKING LAYER OF THE SIMULATION. NOTHING IS RECORDED OR SENT ANYWHERE.</p>
+  <p>OPENS YOUR CAMERA AND FINDS THE ONE THING WORTH TRACKING, THEN RENDERS THE TRACKING LAYER OF THE SIMULATION OVER IT. NOTHING IS RECORDED OR SENT ANYWHERE.</p>
   <button id="go">OPEN CAMERA</button>
   <div id="err"></div>
 </div>
 
 <script>
 'use strict';
+
+/* ────────────────────────────────────────────────────────────────────────────
+   simulation cam
+
+   There is still no machine-vision model in here. What there is:
+
+     1. the frame, downsampled to a 176-cell-wide luminance grid plus a
+        chroma-rule skin mask
+     2. frame differencing for motion, and a brightness/texture pass for light
+     3. connected components over the dilated motion mask, which is what turns
+        "cells that changed" into "things that moved"
+     4. a classifier that picks ONE kind of subject for the frame, and a tracker
+        that keeps a stable id and a smoothed box on each instance of it
+     5. the numeric flood, which now lives strictly inside whatever is locked
+
+   The one rule the whole thing is built around: only one class of subject is
+   ever tracked at a time, and nothing outside it is ever drawn on.
+   ──────────────────────────────────────────────────────────────────────────── */
+
 const video = document.getElementById('v');
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const small = document.createElement('canvas');
-const sctx = small.getContext('2d', {willReadFrequently:true});
+const sctx = small.getContext('2d', {willReadFrequently: true});
 
-const MAX_TRACKERS = 450;
-const MAX_LINKS = 46;
-const SW = 176;                      // motion-grid width in cells
+const P = new URLSearchParams(location.search);
+const SEED = P.has('seed') ? (parseInt(P.get('seed'), 10) >>> 0)
+                           : (Math.random() * 4294967296) >>> 0;
 
-let W=0, H=0, SH=0, cell=1;
-let prevLum = null;
-let trackers = [], links = [];
-let nextId = 300 + (Math.random()*30000|0); // ids only ever count up, like the real thing
+/* mulberry32, so a run can be pinned to a seed and so the native build can be
+   compared against this one number for number. */
+function mulberry32(a) {
+  return function () {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, a | 1);
+    t = t + Math.imul(t ^ t >>> 7, t | 61) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(SEED);
+
+/* ── the numbers, all in grid cells unless said otherwise ─────────────────── */
+
+const CFG = {
+  gridWidth: 176,      // ceiling; the grid is sized to a constant cell budget
+  gridMin: 96,
+  cellBudget: 30000,   // a tall phone frame would be 67k cells at a fixed width,
+                       // which is three connected-component passes too many
+
+  motion: 30, motionNbr: 16,             // frame differencing
+  edge: 52,                                // static edge fallback
+
+  skinCbLo: 77, skinCbHi: 127,             // Chai & Ngan chroma box: chroma, so
+  skinCrLo: 133, skinCrHi: 173,            // it holds across skin tones
+  skinLumaLo: 40, skinLumaHi: 240, skinDiff: 14,
+  skinMinArea: 40,                         // cells, before it counts as a subject
+
+  subjMinSide: 9,      // a mass this big on both sides is a subject, not a mote
+  subjMinMotion: 26,   // ...as long as this much of it actually moved
+  subjSkinFrac: 0.18,  // enough skin in the box to call it face or hand
+  faceAspectLo: 0.55, faceAspectHi: 1.9,
+  handFrac: 0.5,       // a skin mass this much smaller than the face is a hand
+
+  moteMaxSide: 7,      // a mass this small is one bee, one ant, one dust grain
+  swarmMin: 5,         // this many of them and the frame is a swarm
+  spotRadius: 4,       // window the spot detector compares a cell against
+  spotContrast: 20,    // how far off the local mean a grain has to be
+  spotAreaFrac: 0.08,  // more ink than this and it is texture, not a swarm
+  spotMaxCount: 90,    // more grains than this and it is gravel, not a swarm
+
+  beamLuma: 96,        // bright...
+  beamTexture: 26,     // ...and soft: a shaft of light has no detail in it
+  beamAreaFrac: 0.045, // ...and a band, not the whole room: a white wall fills
+  beamAreaMax: 0.55,   //    the frame and is neither a shaft nor interesting
+  beamElong: 2.8,      // long and thin. A lit window is bright but stubby
+  beamContrast: 34,    // and it is only visible because the rest is dark
+  beamCapture: 0.45,   // motes mostly inside a beam belong to the beam
+
+  maxTracks: 72,
+  maxMotes: 460,
+  maxLinks: 44,
+  trackMiss: {living: 12, swarm: 4, beam: 8, object: 8},
+};
+
+const MODE = {none: 'NO SUBJECT', living: 'LIVING', swarm: 'SWARM',
+              beam: 'TYNDALL', object: 'OBJECT'};
+const TEAL = '127,216,216';
+const WHITE = '255,255,255';
+
+/* ── state ────────────────────────────────────────────────────────────────── */
+
+let W = 0, H = 0, GW = CFG.gridWidth, GH = 0, N = 0, cell = 1;
+let lum, prev, prevReady = false, skin, mot, dil, dilB, lab, stack, brightM, spotM, integral;
 let facing = 'user', stream = null, running = false;
-let testMode = false, frameNo = 0;   // ?test: synthetic pattern instead of camera (headless verification)
+let frameNo = 0, chaos = 0, mode = 'none';
+let tracks = [], motes = [], links = [];
+let nextId = 300 + (rnd() * 30000 | 0);
+let beamCells = null, beamArea = 0;   // the mask the flood is clipped to
 
-function resize(){
+function resize() {
   W = canvas.width = innerWidth * devicePixelRatio;
   H = canvas.height = innerHeight * devicePixelRatio;
-  canvas.style.width = innerWidth+'px';
-  canvas.style.height = innerHeight+'px';
-  SH = Math.max(24, Math.round(SW*H/W));
-  small.width = SW; small.height = SH;
-  cell = W/SW;
-  prevLum = null;
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+  // Keep the number of cells roughly constant whatever the shape of the screen,
+  // so the cost of a frame does not triple in portrait.
+  GW = Math.max(CFG.gridMin, Math.min(CFG.gridWidth,
+        Math.round(Math.sqrt(CFG.cellBudget * W / H))));
+  GH = Math.max(24, Math.round(GW * H / W));
+  N = GW * GH;
+  small.width = GW; small.height = GH;
+  cell = W / GW;
+  lum = new Uint8Array(N); prev = new Uint8Array(N);
+  skin = new Uint8Array(N); mot = new Uint8Array(N);
+  dil = new Uint8Array(N); dilB = new Uint8Array(N);
+  brightM = new Uint8Array(N); spotM = new Uint8Array(N);
+  integral = new Uint32Array((GW + 1) * (GH + 1));
+  lab = new Int32Array(N); stack = new Int32Array(N);
+  prevReady = false;
+  tracks = []; motes = []; links = []; beamCells = null;
+  // Setting canvas.width wipes it, and headless Chrome fires a resize after
+  // load, so a synchronous test batch has to be replayed here or the shot comes
+  // out black.
+  if (testFrames) runTestBatch();
 }
 addEventListener('resize', resize);
 
-function spawn(x, y){
-  const r = Math.random();
-  const t = {
-    x, y, id: nextId++,
-    vx:(Math.random()-.5)*.25, vy:(Math.random()-.5)*.25,
-    age:0, ttl: 40 + Math.random()*150,
-    size: 9 + Math.random()*4,
-    kind: r < .78 ? 'tag' : r < .96 ? 'box' : 'fill',
-    w: 14 + Math.random()*60, h: 8 + Math.random()*40,
-    teal: Math.random() < .05,
-  };
-  trackers.push(t);
-  // occasionally wire the newcomer to an older tracker — the web of lines
-  if (links.length < MAX_LINKS && trackers.length > 4 && Math.random() < .12){
-    links.push({a:t, b:trackers[Math.random()*(trackers.length-1)|0]});
+/* ── 1. sample the frame: luminance and a skin mask ───────────────────────── */
+
+function sample() {
+  sctx.drawImage(canvas, 0, 0, GW, GH);
+  const px = sctx.getImageData(0, 0, GW, GH).data;
+  for (let i = 0; i < N; i++) {
+    const j = i * 4, r = px[j], g = px[j + 1], b = px[j + 2];
+    const y = (r * 3 + g * 4 + b) >> 3;
+    lum[i] = y;
+    // full chroma, because a face is a colour before it is a shape
+    const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+    const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+    // The luma cap and the Cr-over-Cb margin are what keep a warm shaft of
+    // sunlight out of the skin mask: a beam is bright and barely tinted, skin is
+    // mid-bright and decidedly red.
+    skin[i] = (y > CFG.skinLumaLo && y < CFG.skinLumaHi
+               && cb >= CFG.skinCbLo && cb <= CFG.skinCbHi
+               && cr >= CFG.skinCrLo && cr <= CFG.skinCrHi
+               && cr - cb >= CFG.skinDiff) ? 1 : 0;
   }
-  return t;
 }
 
-function drawTestPattern(){
-  ctx.fillStyle = '#1a2030'; ctx.fillRect(0,0,W,H);
-  ctx.fillStyle = '#555'; ctx.fillRect(W*.1, H*.6, W*.3, H*.25);   // static edges → feature points
-  const a = frameNo/20;
-  ctx.fillStyle = '#eee';
+/* ── 2. motion, and the light pass ────────────────────────────────────────── */
+
+let motCount = 0;
+
+function motionPass() {
+  mot.fill(0);
+  motCount = 0;
+  if (!prevReady) return;
+  for (let i = 0; i < N - GW - 1; i++) {
+    const d = Math.abs(lum[i] - prev[i]);
+    // neighbour confirmation, or sensor noise on a flat wall reads as movement
+    if (d > CFG.motion && (Math.abs(lum[i + 1] - prev[i + 1]) > CFG.motionNbr
+                           || Math.abs(lum[i + GW] - prev[i + GW]) > CFG.motionNbr)) {
+      mot[i] = 1;
+      motCount++;
+    }
+  }
+}
+
+/* Bright and *smooth*: a shaft of light is the one thing in a room with a lot of
+   luminance and almost no detail in it. Texture is the local gradient. */
+function lightPass() {
+  brightM.fill(0);
+  let count = 0;
+  for (let y = 1; y < GH - 1; y++) {
+    for (let x = 1; x < GW - 1; x++) {
+      const i = y * GW + x, v = lum[i];
+      if (v < CFG.beamLuma) continue;
+      const tex = Math.abs(v - lum[i + 1]) + Math.abs(v - lum[i - 1])
+                + Math.abs(v - lum[i + GW]) + Math.abs(v - lum[i - GW]);
+      if (tex < CFG.beamTexture) { brightM[i] = 1; count++; }
+    }
+  }
+  return count;
+}
+
+/* Small high-contrast grains, moving or not.
+   A bee crossing the frame differences beautifully; an ant crawling, or dust
+   hanging in still air, barely moves between frames and would never be found by
+   motion alone. So this compares every cell against the mean of the window
+   around it — a summed-area table makes that one pass — and keeps the cells that
+   stand well clear of their surroundings. */
+function spotPass() {
+  const w1 = GW + 1;
+  for (let x = 0; x <= GW; x++) integral[x] = 0;
+  for (let y = 0; y < GH; y++) {
+    let row = 0;
+    integral[(y + 1) * w1] = 0;
+    for (let x = 0; x < GW; x++) {
+      row += lum[y * GW + x];
+      integral[(y + 1) * w1 + x + 1] = integral[y * w1 + x + 1] + row;
+    }
+  }
+  spotM.fill(0);
+  const r = CFG.spotRadius;
+  let count = 0;
+  for (let y = r; y < GH - r; y++) {
+    for (let x = r; x < GW - r; x++) {
+      const x0 = x - r, y0 = y - r, x1 = x + r + 1, y1 = y + r + 1;
+      const sum = integral[y1 * w1 + x1] - integral[y0 * w1 + x1]
+                - integral[y1 * w1 + x0] + integral[y0 * w1 + x0];
+      const mean = sum / ((2 * r + 1) * (2 * r + 1));
+      if (Math.abs(lum[y * GW + x] - mean) > CFG.spotContrast) {
+        spotM[y * GW + x] = 1;
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+/* ── 3. connected components ──────────────────────────────────────────────── */
+
+/* Grow the mask so a subject's separate flickers — an eye, a collar, an edge —
+   join into one mass instead of reading as a swarm of little ones. */
+function dilate(src, dst) {
+  dst.fill(0);
+  for (let y = 0; y < GH; y++) {
+    const row = y * GW;
+    for (let x = 0; x < GW; x++) {
+      if (!src[row + x]) continue;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= GH) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= GW) continue;
+          dst[yy * GW + xx] = 1;
+        }
+      }
+    }
+  }
+}
+
+/* 8-connected flood fill. Returns a mass per component with everything the
+   classifier needs, including second moments for elongation. */
+function components(mask, wantMoments, wantCells) {
+  lab.fill(0);
+  const out = [];
+  let id = 0;
+  for (let seed = 0; seed < N; seed++) {
+    if (!mask[seed] || lab[seed]) continue;
+    id++;
+    let sp = 0;
+    stack[sp++] = seed;
+    lab[seed] = id;
+    let area = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, lsum = 0;
+    let minx = GW, maxx = -1, miny = GH, maxy = -1, mcount = 0, scount = 0;
+    const cells = wantCells ? [] : null;
+    while (sp > 0) {
+      const p = stack[--sp];
+      const px = p % GW, py = (p / GW) | 0;
+      area++; sx += px; sy += py; lsum += lum[p];
+      if (wantMoments) { sxx += px * px; syy += py * py; sxy += px * py; }
+      if (px < minx) minx = px;
+      if (px > maxx) maxx = px;
+      if (py < miny) miny = py;
+      if (py > maxy) maxy = py;
+      if (mot[p]) mcount++;
+      if (skin[p]) scount++;
+      if (wantCells) cells.push(p);
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = py + dy;
+        if (yy < 0 || yy >= GH) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = px + dx;
+          if (xx < 0 || xx >= GW) continue;
+          const q = yy * GW + xx;
+          if (mask[q] && !lab[q]) { lab[q] = id; stack[sp++] = q; }
+        }
+      }
+    }
+    const m = {
+      area, cells,
+      cx: sx / area, cy: sy / area,
+      minx, maxx, miny, maxy,
+      w: maxx - minx + 1, h: maxy - miny + 1,
+      motion: mcount,
+      skinFrac: scount / area,
+      lumaMean: lsum / area,
+      elong: 1,
+    };
+    if (wantMoments) {
+      // eigenvalues of the covariance matrix: how much of a streak this is
+      const vx = sxx / area - m.cx * m.cx, vy = syy / area - m.cy * m.cy;
+      const vxy = sxy / area - m.cx * m.cy;
+      const tr = vx + vy, det = vx * vy - vxy * vxy;
+      const disc = Math.max(0, tr * tr / 4 - det);
+      const l1 = tr / 2 + Math.sqrt(disc), l2 = tr / 2 - Math.sqrt(disc);
+      m.elong = l2 > 0.5 ? Math.sqrt(l1 / l2) : 6;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+/* ── 4. one class of subject per frame ────────────────────────────────────── */
+
+function overlaps(a, b) {
+  const ix = Math.min(a.maxx, b.maxx) - Math.max(a.minx, b.minx) + 1;
+  const iy = Math.min(a.maxy, b.maxy) - Math.max(a.miny, b.miny) + 1;
+  if (ix <= 0 || iy <= 0) return 0;
+  return ix * iy / Math.min(a.w * a.h, b.w * b.h);
+}
+
+function classify() {
+  /* The two scales are measured on two masks, which matters more than it looks.
+     One bee is a two-cell blob in the raw motion mask; grown by two cells to hold
+     a body together it becomes seven, which is neither a mote nor a subject, and
+     it would fall through the classifier entirely. So: motes off the raw mask,
+     masses off the grown one. */
+  let smalls = components(mot, false).filter(
+    m => m.area >= 2 && m.w <= CFG.moteMaxSide && m.h <= CFG.moteMaxSide);
+
+  dilate(mot, dil);
+  dilate(dil, dilB);              // radius 2: a face holds together, a bee does not
+  const movers = components(dilB, false).filter(
+    m => m.w >= CFG.subjMinSide && m.h >= CFG.subjMinSide && m.motion >= CFG.subjMinMotion);
+
+  /* Not enough movers to call it a swarm? Look for grains by contrast instead,
+     so a line of ants and a room of hanging dust both count. The two caps are
+     what keep a brick wall or a gravel path from reading as a thousand insects. */
+  if (smalls.length < CFG.swarmMin) {
+    const spotArea = spotPass();
+    if (spotArea > 0 && spotArea < CFG.spotAreaFrac * N) {
+      const grains = components(spotM, false).filter(
+        m => m.area >= 2 && m.w <= CFG.moteMaxSide && m.h <= CFG.moteMaxSide);
+      if (grains.length >= CFG.swarmMin && grains.length <= CFG.spotMaxCount) smalls = grains;
+    }
+  }
+
+  /* Skin is found on its own, not through motion. A face held still barely
+     differences at all, and locking the hand because it was the only thing that
+     moved is exactly the wrong answer. */
+  dilate(skin, dil);
+  const flesh = components(dil, false).filter(
+    m => m.w >= CFG.subjMinSide && m.h >= CFG.subjMinSide && m.area >= CFG.skinMinArea);
+
+  // a living frame is the flesh, plus anything else moving as one piece that is
+  // not part of it: a bird, a cat, an arm in a sleeve
+  const subjects = flesh.slice();
+  for (const m of movers) {
+    if (m.skinFrac >= CFG.subjSkinFrac) continue;
+    if (flesh.some(f => overlaps(f, m) > 0.35)) continue;
+    subjects.push(m);
+  }
+
+  // the light pass only runs when nothing living already owns the frame, which
+  // is also the only reason a frame can afford it
+  let beam = null;
+  const brightCount = subjects.length ? 0 : lightPass();
+  if (brightCount > CFG.beamAreaFrac * N) {
+    dilate(brightM, dil);
+    let lumaTotal = 0;
+    for (let i = 0; i < N; i++) lumaTotal += lum[i];
+    let best = null;
+    for (const m of components(dil, true, true)) {
+      if (m.area < CFG.beamAreaFrac * N || m.area > CFG.beamAreaMax * N) continue;
+      if (m.elong < CFG.beamElong) continue;
+      // A shaft of light is only a shaft because the room around it is dark. Drop
+      // this test and a white wall, a lit window or a sheet of paper all read as
+      // Tyndall, which is the one thing this mode is not allowed to get wrong.
+      const outside = (lumaTotal - m.lumaMean * m.area) / Math.max(1, N - m.area);
+      if (m.lumaMean - outside < CFG.beamContrast) continue;
+      if (!best || m.area > best.area) best = m;
+    }
+    beam = best;
+  }
+
+  // dust in a shaft is not a swarm of insects: if the little movers are mostly
+  // inside the beam, they belong to it, and so does the frame
+  let captured = 0;
+  if (beam) {
+    const inBeam = new Uint8Array(N);
+    for (const p of beam.cells) inBeam[p] = 1;
+    for (const m of smalls) if (inBeam[(m.cy | 0) * GW + (m.cx | 0)]) captured++;
+    // A motion mass sitting inside the beam is the beam's own brightness moving
+    // about, not a body. Flesh is exempt: it was found by colour, so a hand held
+    // up in the shaft is still a hand.
+    for (let i = subjects.length - 1; i >= 0; i--) {
+      const s = subjects[i];
+      if (flesh.includes(s)) continue;
+      let hit = 0, seen = 0;
+      for (let y = s.miny; y <= s.maxy; y += 2) {
+        for (let x = s.minx; x <= s.maxx; x += 2) {
+          seen++;
+          if (inBeam[y * GW + x]) hit++;
+        }
+      }
+      if (seen && hit / seen > 0.6) subjects.splice(i, 1);
+    }
+    beam.inBeam = inBeam;
+  }
+
+  chaos = Math.min(1, 0.6 * motCount / (0.05 * N) + 0.4 * Math.min(1, smalls.length / 18));
+
+  if (subjects.length) return {mode: 'living', subjects, beam: null};
+  if (beam && (smalls.length === 0 || captured / smalls.length >= CFG.beamCapture)) {
+    return {mode: 'beam', subjects: [], beam};
+  }
+  if (smalls.length >= CFG.swarmMin) return {mode: 'swarm', subjects: smalls, beam: null};
+
+  // nothing moved: fall back to the strongest static edge cluster, so the lock
+  // is on the one solid thing in frame rather than on nothing
+  const edges = new Uint8Array(N);
+  let ecount = 0;
+  for (let i = 0; i < N - GW - 1; i += 2) {
+    if (Math.abs(lum[i] - lum[i + 1]) + Math.abs(lum[i] - lum[i + GW]) > CFG.edge) {
+      edges[i] = 1; ecount++;
+    }
+  }
+  if (ecount > 12) {
+    dilate(edges, dil);
+    dilate(dil, dilB);
+    let best = null;
+    for (const m of components(dilB, false)) {
+      if (m.w < CFG.subjMinSide || m.h < CFG.subjMinSide) continue;
+      if (!best || m.area > best.area) best = m;
+    }
+    if (best) return {mode: 'object', subjects: [best], beam: null};
+  }
+  return {mode: 'none', subjects: [], beam: null};
+}
+
+/* Give the mass a class name. This is where a skin-coloured compact blob
+   becomes a FACE and everything else that moves as one piece becomes a body or
+   a creature. */
+function className(m, biggestSkinArea) {
+  const aspect = m.w / m.h;
+  if (m.skinFrac >= CFG.subjSkinFrac) {
+    if (m.area < biggestSkinArea * CFG.handFrac) return 'HAND';
+    if (aspect > CFG.faceAspectLo && aspect < CFG.faceAspectHi) return 'FACE';
+    return 'BODY';
+  }
+  if (aspect > 2.4 || aspect < 0.42) return 'LIMB';
+  return m.area > 0.06 * N ? 'BODY' : 'CREATURE';
+}
+
+/* ── 5. tracking: a stable id and a smoothed box per instance ─────────────── */
+
+function toTarget(m, cls) {
+  return {
+    cls,
+    x: (m.minx + m.maxx + 1) / 2 * cell,
+    y: (m.miny + m.maxy + 1) / 2 * cell,
+    w: m.w * cell,
+    h: m.h * cell,
+    conf: Math.min(1, 0.35 + m.motion / 120),
+  };
+}
+
+function updateTracks(targets, maxMiss) {
+  for (const t of tracks) t.matched = false;
+  for (const g of targets) {
+    let best = null, bd = Infinity;
+    for (const t of tracks) {
+      if (t.matched) continue;
+      const reach = 0.5 * (t.w + g.w) + 0.5 * (t.h + g.h) + 24;
+      const d = Math.hypot(t.x - g.x, t.y - g.y) / reach;
+      if (d < bd) { bd = d; best = t; }
+    }
+    if (best && bd < 0.75) {
+      // ease onto the measurement: a box that snaps looks like a bug, a box
+      // that lags looks like it is tracking
+      const k = 0.35;
+      best.x += (g.x - best.x) * k;
+      best.y += (g.y - best.y) * k;
+      best.w += (g.w - best.w) * k * 0.8;
+      best.h += (g.h - best.h) * k * 0.8;
+      best.cls = g.cls;
+      best.conf = g.conf;
+      best.matched = true;
+      best.miss = 0;
+      best.age++;
+    } else if (tracks.length < CFG.maxTracks) {
+      tracks.push({
+        id: nextId++, cls: g.cls, x: g.x, y: g.y, w: g.w, h: g.h,
+        conf: g.conf, matched: true, miss: 0, age: 0,
+        teal: rnd() < 0.07, phase: rnd() * 6.283,
+      });
+    }
+  }
+  // Two locks on one subject reads as a fault, and the ease-onto-measurement
+  // makes them easy to create: drop whichever of an overlapping pair is younger.
+  for (let i = 0; i < tracks.length; i++) {
+    for (let j = i + 1; j < tracks.length; j++) {
+      const a = tracks[i], b = tracks[j];
+      const ix = Math.min(a.x + a.w / 2, b.x + b.w / 2) - Math.max(a.x - a.w / 2, b.x - b.w / 2);
+      const iy = Math.min(a.y + a.h / 2, b.y + b.h / 2) - Math.max(a.y - a.h / 2, b.y - b.h / 2);
+      if (ix <= 0 || iy <= 0) continue;
+      if (ix * iy / Math.min(a.w * a.h, b.w * b.h) > 0.55) {
+        (a.age >= b.age ? b : a).miss = maxMiss + 1;
+      }
+    }
+  }
+  tracks = tracks.filter(t => {
+    if (!t.matched) { t.miss++; t.age++; }
+    return t.miss <= maxMiss;
+  });
+  links = links.filter(l => tracks.includes(l.a) && tracks.includes(l.b));
+  // wire the locks to each other: face to hand, mote to nearest mote
+  if ((mode === 'living' || mode === 'swarm') && tracks.length > 1
+      && links.length < CFG.maxLinks && rnd() < (mode === 'swarm' ? 0.55 : 0.3)) {
+    const a = tracks[rnd() * tracks.length | 0];
+    let b = null, bd = Infinity;
+    for (const t of tracks) {
+      if (t === a) continue;
+      const d = Math.hypot(t.x - a.x, t.y - a.y);
+      if (d < bd) { bd = d; b = t; }
+    }
+    if (b) links.push({a, b});
+  }
+}
+
+/* ── 6. the flood: the old confetti, now penned inside what is locked ─────── */
+
+function spawnMote(owner, x, y) {
+  const r = rnd();
+  motes.push({
+    id: nextId++, owner,
+    ox: owner ? (x - owner.x) / Math.max(1, owner.w) : 0,   // ride the box
+    oy: owner ? (y - owner.y) / Math.max(1, owner.h) : 0,
+    x, y,
+    vx: (rnd() - 0.5) * 0.25 * devicePixelRatio,
+    vy: (rnd() - 0.5) * 0.25 * devicePixelRatio,
+    age: 0, ttl: 30 + rnd() * 120,
+    size: 8 + rnd() * 4,
+    kind: r < 0.82 ? 'tag' : r < 0.97 ? 'box' : 'fill',
+    w: 12 + rnd() * 40, h: 7 + rnd() * 26,
+    teal: rnd() < 0.05,
+  });
+}
+
+function updateMotes(state) {
+  const F = devicePixelRatio;
+  // How much numeric noise the frame has earned. A beam gets flooded; a lock
+  // gets its own allowance, so two hands in frame are twice as busy as one.
+  const budget = mode === 'none' || mode === 'swarm' ? 0
+    : mode === 'beam' ? Math.round(150 + chaos * 290)
+    : Math.round(tracks.length * (16 + chaos * 54));
+
+  for (const m of motes) {
+    m.age++;
+    if (m.owner) {
+      // follow the owner, then drift inside it
+      m.x = m.owner.x + m.ox * m.owner.w + m.vx * m.age * 0.35;
+      m.y = m.owner.y + m.oy * m.owner.h + m.vy * m.age * 0.35;
+      m.dead = m.age >= m.ttl || !tracks.includes(m.owner)
+               || Math.abs(m.x - m.owner.x) > m.owner.w * 0.5
+               || Math.abs(m.y - m.owner.y) > m.owner.h * 0.5;
+    } else {
+      m.x += m.vx + (rnd() - 0.5) * 0.5 * F;
+      m.y += m.vy + (rnd() - 0.5) * 0.5 * F;
+      const gi = (m.y / cell | 0) * GW + (m.x / cell | 0);
+      m.dead = m.age >= m.ttl || !state.beam || !state.beam.inBeam[gi];
+    }
+  }
+  motes = motes.filter(m => !m.dead);
+
+  let want = Math.min(CFG.maxMotes, budget) - motes.length;
+  let guard = want * 4;
+  while (want > 0 && guard-- > 0) {
+    if (mode === 'beam') {
+      // the mode is held for a few frames after a beam is lost, so this can be
+      // the beam mode with no beam in hand
+      if (!state.beam) break;
+      const p = state.beam.cells[rnd() * state.beam.cells.length | 0];
+      spawnMote(null, (p % GW + rnd()) * cell, ((p / GW | 0) + rnd()) * cell);
+      want--;
+    } else if (tracks.length) {
+      const t = tracks[rnd() * tracks.length | 0];
+      // swarm members are too small to hold a flood; they get one label each
+      if (mode === 'swarm') break;
+      spawnMote(t, t.x + (rnd() - 0.5) * t.w * 0.8, t.y + (rnd() - 0.5) * t.h * 0.8);
+      want--;
+    } else break;
+  }
+  if (motes.length > CFG.maxMotes) motes.splice(0, motes.length - CFG.maxMotes);
+}
+
+/* ── 7. drawing ───────────────────────────────────────────────────────────── */
+
+/* White ink over a bright frame is invisible, and half of what this thing gets
+   pointed at is bright: a shaft of sunlight, a pale wall, an insect against the
+   sky. So the ink is chosen from the luminance under it. */
+function ink(x, y, teal) {
+  if (teal) return TEAL;
+  const gx = Math.min(GW - 1, Math.max(0, x / cell | 0));
+  const gy = Math.min(GH - 1, Math.max(0, y / cell | 0));
+  return lum[gy * GW + gx] > 150 ? '18,20,26' : WHITE;
+}
+
+function label(x, y, text, size, colour, alpha, tick) {
+  const F = devicePixelRatio;
+  ctx.font = Math.round(size * F) + 'px "Arial Narrow",Arial';
+  if (tick) {
+    ctx.strokeStyle = 'rgba(' + colour + ',' + alpha + ')';
+    ctx.beginPath();
+    ctx.moveTo(x - 2 * F, y + 3 * F);
+    ctx.lineTo(x - 2 * F, y);
+    ctx.lineTo(x + 2 * F, y);
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(' + colour + ',' + alpha + ')';
+  ctx.fillText(text, x + 3 * F, y);
+}
+
+function brackets(t, alpha) {
+  const F = devicePixelRatio;
+  const colour = ink(t.x, t.y, t.teal);
+  const x0 = t.x - t.w / 2, x1 = t.x + t.w / 2;
+  const y0 = t.y - t.h / 2, y1 = t.y + t.h / 2;
+  const arm = Math.min(22 * F, Math.min(t.w, t.h) * 0.28);
+  ctx.strokeStyle = 'rgba(' + colour + ',' + alpha + ')';
+  ctx.lineWidth = 1.6 * F;
   ctx.beginPath();
-  ctx.arc(W/2 + Math.cos(a)*W*.3, H/2 + Math.sin(a*1.3)*H*.3, W*.08, 0, 7);
-  ctx.fill();
+  for (const [cx, cy, sx, sy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]) {
+    ctx.moveTo(cx + sx * arm, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy * arm);
+  }
+  ctx.stroke();
+  ctx.lineWidth = 0.75 * F;
+  ctx.strokeStyle = 'rgba(' + colour + ',' + (alpha * 0.22) + ')';
+  ctx.strokeRect(x0, y0, t.w, t.h);
 }
 
-function step(){
-  if (!running) return;
-  requestAnimationFrame(step);
-  frameNo++;
+function drawBeamEdge(state) {
+  const F = devicePixelRatio;
+  const inBeam = state.beam.inBeam;
+  ctx.strokeStyle = 'rgba(18,20,26,.5)';
+  ctx.lineWidth = 0.75 * F;
+  ctx.beginPath();
+  for (let k = 0; k < state.beam.cells.length; k += 2) {
+    const p = state.beam.cells[k];
+    const x = p % GW, y = (p / GW) | 0;
+    const edge = !inBeam[p - 1] || !inBeam[p + 1] || !inBeam[p - GW] || !inBeam[p + GW]
+                 || x === 0 || x === GW - 1 || y === 0 || y === GH - 1;
+    if (!edge) continue;
+    ctx.moveTo(x * cell, y * cell);
+    ctx.lineTo(x * cell + cell * 0.7, y * cell);
+  }
+  ctx.stroke();
+}
 
-  // 1. draw the camera frame, cover-cropped, mirrored for the front camera
-  if (testMode){
-    drawTestPattern();
-  } else {
+function drawOverlay(state) {
+  const F = devicePixelRatio;
+  ctx.lineWidth = 0.75 * F;
+  ctx.lineJoin = 'miter';
+
+  if (mode === 'beam' && state.beam) drawBeamEdge(state);
+
+  // link lines, under everything
+  if (links.length) {
+    ctx.strokeStyle = 'rgba(' + WHITE + ',.45)';
+    ctx.beginPath();
+    for (const l of links) { ctx.moveTo(l.a.x, l.a.y); ctx.lineTo(l.b.x, l.b.y); }
+    ctx.stroke();
+  }
+
+  // the locks
+  for (const t of tracks) {
+    const fade = Math.min(1, (t.age + 1) / 5) * (t.miss ? 0.45 : 1) * (0.55 + 0.45 * t.conf);
+    const colour = ink(t.x, t.y, t.teal);
+    if (mode === 'swarm') {
+      ctx.strokeStyle = 'rgba(' + colour + ',' + (0.7 * fade) + ')';
+      ctx.strokeRect(t.x - t.w / 2, t.y - t.h / 2, Math.max(6 * F, t.w), Math.max(6 * F, t.h));
+      label(t.x + t.w / 2 + 2 * F, t.y - t.h / 2, String(t.id), 8.5, colour, 0.85 * fade, false);
+      continue;
+    }
+    brackets(t, 0.9 * fade);
+    label(t.x - t.w / 2, t.y - t.h / 2 - 5 * F, t.cls + ' ' + t.id, 11, colour, 0.95 * fade, true);
+    // a scan line crossing the lock, so it reads as being examined
+    const sy = t.y - t.h / 2 + ((frameNo * 2.4 + t.phase * 40) % t.h);
+    ctx.strokeStyle = 'rgba(' + colour + ',' + (0.3 * fade) + ')';
+    ctx.beginPath();
+    ctx.moveTo(t.x - t.w / 2, sy); ctx.lineTo(t.x + t.w / 2, sy);
+    ctx.stroke();
+    label(t.x - t.w / 2, t.y + t.h / 2 + 11 * F,
+          (t.conf * 100 | 0) + '%', 8.5, colour, 0.5 * fade, false);
+  }
+
+  // the flood inside them
+  for (const m of motes) {
+    const fade = Math.min(1, Math.min((m.ttl - m.age) / 18, m.age / 5));
+    const colour = ink(m.x, m.y, m.teal);
+    if (m.kind === 'fill') {
+      let cwid = m.w * F * 0.8;
+      if (m.owner) cwid = Math.min(cwid, m.owner.x + m.owner.w / 2 - m.x);
+      if (cwid < 6 * F) cwid = 6 * F;
+      ctx.fillStyle = 'rgba(' + colour + ',' + (0.8 * fade) + ')';
+      ctx.fillRect(m.x, m.y - m.h * F * 0.35, cwid, m.h * F * 0.35);
+      ctx.font = Math.round(m.size * F) + 'px "Arial Narrow",Arial';
+      ctx.fillStyle = 'rgba(' + (colour === WHITE ? '0,0,0' : '245,245,245') + ',' + (0.8 * fade) + ')';
+      ctx.fillText(String(m.id), m.x + 3 * F, m.y - 2 * F);
+      continue;
+    }
+    if (m.kind === 'box') {
+      let bw = m.w * F, bh = m.h * F;
+      if (m.owner) {   // a mark's box never pokes out of the lock it belongs to
+        bw = Math.min(bw, (m.owner.w * 0.5 - Math.abs(m.x - m.owner.x)) * 2);
+        bh = Math.min(bh, m.owner.y + m.owner.h / 2 - m.y - 2 * F);
+      }
+      if (bw > 3 * F && bh > 3 * F) {
+        ctx.strokeStyle = 'rgba(' + colour + ',' + (0.6 * fade) + ')';
+        ctx.strokeRect(m.x - bw / 2, m.y + 2 * F, bw, bh);
+      }
+    }
+    label(m.x, m.y, String(m.id), m.size, colour, 0.9 * fade, true);
+  }
+
+  // readout: which class the frame got locked to, and how busy it is
+  ctx.font = Math.round(9 * F) + 'px "Arial Narrow",Arial';
+  ctx.fillStyle = 'rgba(' + WHITE + ',.4)';
+  const lines = [
+    'TRACKING ' + MODE[mode],
+    'LOCKS ' + tracks.length + '  MARKS ' + motes.length,
+    'CHAOS ' + chaos.toFixed(2) + '  GRID ' + GW + 'x' + GH,
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], 12 * F, H - (12 + (lines.length - 1 - i) * 12) * F);
+  }
+}
+
+/* ── 8. one frame ─────────────────────────────────────────────────────────── */
+
+let pendingMode = null, pendingCount = 0;
+
+/* A single odd frame should not restart the tracking, so a new class has to hold
+   for a few frames before the display follows it. */
+function debounceMode(candidate) {
+  if (candidate === mode) { pendingMode = null; pendingCount = 0; return mode; }
+  if (candidate === pendingMode) pendingCount++;
+  else { pendingMode = candidate; pendingCount = 1; }
+  if (pendingCount >= (mode === 'none' ? 1 : 3)) {
+    pendingMode = null; pendingCount = 0;
+    return candidate;
+  }
+  return mode;
+}
+
+function stepOnce() {
+  frameNo++;
+  if (testMode) drawTestScene();
+  else {
     if (video.readyState < 2) return;
     const vw = video.videoWidth, vh = video.videoHeight;
-    const s = Math.max(W/vw, H/vh);
-    const dw = vw*s, dh = vh*s;
+    const s = Math.max(W / vw, H / vh);
+    const dw = vw * s, dh = vh * s;
     ctx.save();
-    if (facing === 'user'){ ctx.translate(W,0); ctx.scale(-1,1); }
-    ctx.drawImage(video, (W-dw)/2, (H-dh)/2, dw, dh);
+    if (facing === 'user') { ctx.translate(W, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh);
     ctx.restore();
   }
 
-  // 2. sample the freshly drawn frame at low res and diff against the last one
-  sctx.drawImage(canvas, 0, 0, SW, SH);
-  const px = sctx.getImageData(0, 0, SW, SH).data;
-  const n = SW*SH;
-  const lum = new Uint8Array(n);
-  for (let i=0;i<n;i++){
-    const j=i*4;
-    lum[i] = (px[j]*3 + px[j+1]*4 + px[j+2]) >> 3;
+  sample();
+  motionPass();
+  const state = classify();
+  const settled = debounceMode(state.mode);
+  if (settled !== mode) {
+    // Only one class of subject is ever tracked, so a change of class starts
+    // clean rather than leaving yesterday's locks lying around under new labels.
+    tracks = []; motes = []; links = [];
+    mode = settled;
   }
-  const motion = [], strong = [], feats = [];
-  if (prevLum){
-    for (let i=0;i<n-SW-1;i++){
-      const d = Math.abs(lum[i]-prevLum[i]);
-      // neighbor confirmation filters out sensor noise on flat walls
-      if (d > 30 && (Math.abs(lum[i+1]-prevLum[i+1]) > 16 || Math.abs(lum[i+SW]-prevLum[i+SW]) > 16)){
-        motion.push(i);
-        if (d > 70) strong.push(i);
-      }
-    }
-  }
-  // static "feature" points (edges) so calm scenes still get sparse labels
-  if (motion.length < 30){
-    for (let i=0;i<n-SW-1;i+=3){
-      if (Math.abs(lum[i]-lum[i+1]) + Math.abs(lum[i]-lum[i+SW]) > 52) feats.push(i);
-    }
-  }
-  prevLum = lum;
+  // a retained mode with nothing to feed it lets its locks time out on their own
+  const fresh = state.mode === mode;
 
-  // 3. population control: density follows the amount of motion
-  const want = Math.min(MAX_TRACKERS, 26 + motion.length*3);
-  let spawns = Math.min(16, Math.max(0, want - trackers.length));
-  const occupied = new Set();   // coarse grid: one label per region, so they scatter instead of piling up
-  const osz = W/32;
-  const okey = (x,y) => (x/osz|0) + 4096*(y/osz|0);
-  for (const t of trackers) occupied.add(okey(t.x, t.y));
-  while (spawns-- > 0){
-    let i;
-    if (strong.length && Math.random() < .65) i = strong[Math.random()*strong.length|0];
-    else if (motion.length)       i = motion[Math.random()*motion.length|0];
-    else if (feats.length)        i = feats[Math.random()*feats.length|0];
-    else                          i = Math.random()*n|0;
-    const x = (i%SW + Math.random())*cell, y = ((i/SW|0) + Math.random())*cell;
-    const k = okey(x,y);
-    if (occupied.has(k)) continue;
-    occupied.add(k);
-    spawn(x, y);
+  if (mode === 'living' && fresh) {
+    let biggestSkin = 0;
+    for (const m of state.subjects) if (m.skinFrac >= CFG.subjSkinFrac) biggestSkin = Math.max(biggestSkin, m.area);
+    updateTracks(state.subjects.map(m => toTarget(m, className(m, biggestSkin))), CFG.trackMiss.living);
+  } else if (mode === 'swarm' && fresh) {
+    updateTracks(state.subjects.map(m => toTarget(m, 'MOTE')), CFG.trackMiss.swarm);
+  } else if (mode === 'object' && fresh) {
+    updateTracks(state.subjects.map(m => toTarget(m, 'OBJECT')), CFG.trackMiss.object);
+  } else {
+    updateTracks([], CFG.trackMiss[mode] || 0);
   }
-  // trackers whose neighborhood went still decay fast — the cloud clings to what's moving
-  const motionSet = new Set(motion);
-  for (const t of trackers){
-    const ci = (t.x/cell|0) + SW*(t.y/cell|0);
-    if (!(motionSet.has(ci) || motionSet.has(ci-1) || motionSet.has(ci+1) ||
-          motionSet.has(ci-SW) || motionSet.has(ci+SW))) t.age += 3;
-  }
-  trackers = trackers.filter(t => {
-    t.age++;
-    if (t.age >= t.ttl || t.x<-80 || t.x>W+80 || t.y<-40 || t.y>H+40) t.dead = true;
-    return !t.dead;
-  });
-  if (trackers.length > MAX_TRACKERS)
-    trackers.splice(0, trackers.length - MAX_TRACKERS).forEach(t => t.dead = true);
-  links = links.filter(l => !l.a.dead && !l.b.dead);
+  updateMotes(state);
+  drawOverlay(state);
 
-  // 4. overlay — lines under labels
-  const F = devicePixelRatio;
-  ctx.lineWidth = F * .75;
-  ctx.strokeStyle = 'rgba(255,255,255,.5)';
-  ctx.beginPath();
-  for (const l of links){ ctx.moveTo(l.a.x, l.a.y); ctx.lineTo(l.b.x, l.b.y); }
-  ctx.stroke();
-
-  for (const t of trackers){
-    t.x += t.vx + (Math.random()-.5)*.5;   // the nervous jitter is the whole aesthetic
-    t.y += t.vy + (Math.random()-.5)*.5;
-    const fade = Math.min(1, (t.ttl - t.age)/20, t.age/6);
-    const col = t.teal ? '127,216,216' : '255,255,255';
-    ctx.font = (t.size*F)+'px "Arial Narrow",Arial';
-    if (t.kind === 'fill'){
-      ctx.fillStyle = `rgba(${col},${.85*fade})`;
-      ctx.fillRect(t.x, t.y - t.h*F*.35, t.w*F*.8, t.h*F*.35);
-      ctx.fillStyle = `rgba(0,0,0,${.8*fade})`;
-      ctx.fillText(t.id, t.x + 3*F, t.y - 2*F);
-    } else {
-      if (t.kind === 'box'){
-        ctx.strokeStyle = `rgba(${col},${.75*fade})`;
-        ctx.strokeRect(t.x - t.w*F/2, t.y + 2*F, t.w*F, t.h*F);
-      }
-      ctx.strokeStyle = `rgba(${col},${.9*fade})`;
-      ctx.beginPath();                                   // little ⌐ tick before the number
-      ctx.moveTo(t.x - 2*F, t.y + 3*F);
-      ctx.lineTo(t.x - 2*F, t.y);
-      ctx.lineTo(t.x + 2*F, t.y);
-      ctx.stroke();
-      ctx.fillStyle = `rgba(${col},${.92*fade})`;
-      ctx.fillText(t.id, t.x + 3*F, t.y);
-    }
-  }
+  prev.set(lum);
+  prevReady = true;
 }
 
-async function openCam(){
+function loop() {
+  if (!running) return;
+  requestAnimationFrame(loop);
+  stepOnce();
+}
+
+/* ── 9. camera ────────────────────────────────────────────────────────────── */
+
+async function openCam() {
   const errBox = document.getElementById('err');
   errBox.textContent = '';
-  try{
+  try {
     if (!navigator.mediaDevices) throw new Error('camera API unavailable — open this page over https or file://, not plain http');
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({
-      video:{ facingMode: facing, width:{ideal:1280}, height:{ideal:720} }, audio:false
+      video: {facingMode: facing, width: {ideal: 1280}, height: {ideal: 720}}, audio: false
     });
     video.srcObject = stream;
     await video.play();
     document.getElementById('start').style.display = 'none';
     document.getElementById('flip').style.display = 'block';
     resize();
-    if (!running){ running = true; requestAnimationFrame(step); }
-  }catch(e){
+    if (!running) { running = true; requestAnimationFrame(loop); }
+  } catch (e) {
     errBox.textContent = 'CAMERA FAILED: ' + e.message;
   }
 }
 
 document.getElementById('go').onclick = openCam;
-document.getElementById('flip').onclick = () => { facing = facing==='user' ? 'environment' : 'user'; openCam(); };
+document.getElementById('flip').onclick = () => {
+  facing = facing === 'user' ? 'environment' : 'user';
+  prevReady = false;                 // the cut is not movement
+  openCam();
+};
+
+/* ── 10. synthetic scenes, for headless verification ──────────────────────────
+   ?test=face|swarm|beam|object drives the whole pipeline off a drawn scene
+   instead of the camera. ?frames=N runs N steps synchronously and stops, which
+   is the only way to screenshot this under a virtual-time budget. */
+
+let testMode = null, testFrames = 0;
+
+function runTestBatch() {
+  const n = testFrames;
+  testFrames = 0;                    // no recursion through resize
+  for (let i = 0; i < n; i++) stepOnce();
+  testFrames = n;
+}
+
+function drawTestScene() {
+  const t = frameNo;
+  const wob = (a, b, c) => Math.sin(t * a + c) * b;
+  if (testMode === 'face') {
+    ctx.fillStyle = '#282c34'; ctx.fillRect(0, 0, W, H);
+    const fx = W * 0.5 + wob(0.05, W * 0.02, 0), fy = H * 0.42 + wob(0.037, H * 0.012, 1);
+    const fr = Math.min(W, H) * 0.17;
+    ctx.fillStyle = '#d8a888';                       // a face, in chroma terms
+    ctx.beginPath(); ctx.ellipse(fx, fy, fr * 0.78, fr, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2b2118';
+    for (const s of [-1, 1]) {
+      ctx.beginPath(); ctx.ellipse(fx + s * fr * 0.3, fy - fr * 0.18, fr * 0.1, fr * 0.06, 0, 0, 7); ctx.fill();
+    }
+    ctx.beginPath(); ctx.ellipse(fx, fy + fr * 0.45, fr * 0.22, fr * 0.07, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#cf9d80';                       // and a hand, moving more
+    const hx = W * 0.5 + wob(0.09, W * 0.16, 2), hy = H * 0.72 + wob(0.11, H * 0.05, 3);
+    ctx.beginPath(); ctx.ellipse(hx, hy, fr * 0.4, fr * 0.5, 0.4, 0, 7); ctx.fill();
+  } else if (testMode === 'swarm') {
+    ctx.fillStyle = '#c8c8cd'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#1b1b1f';
+    for (let i = 0; i < 22; i++) {
+      const px = W * (0.1 + 0.8 * ((i * 0.137 + Math.sin(t * 0.04 + i) * 0.06) % 1 + 1) % 1);
+      const py = H * (0.1 + 0.8 * ((i * 0.311 + Math.cos(t * 0.05 + i * 2) * 0.06) % 1 + 1) % 1);
+      ctx.beginPath(); ctx.arc(px, py, Math.min(W, H) * 0.008, 0, 7); ctx.fill();
+    }
+  } else if (testMode === 'beam') {
+    ctx.fillStyle = '#06080c'; ctx.fillRect(0, 0, W, H);
+    const g = ctx.createLinearGradient(0, 0, W * 0.75, H);   // the shaft
+    g.addColorStop(0, 'rgba(255,250,235,.95)');
+    g.addColorStop(1, 'rgba(255,250,235,.45)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.06, 0); ctx.lineTo(W * 0.42, 0);
+    ctx.lineTo(W * 0.86, H); ctx.lineTo(W * 0.40, H);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.9)';                  // motes inside it
+    for (let i = 0; i < 40; i++) {
+      const u = (i * 0.173 + Math.sin(t * 0.03 + i) * 0.03 + 1) % 1;
+      const v = (i * 0.397 + t * 0.004 + 1) % 1;
+      const x = W * (0.10 + 0.34 * u) + v * W * 0.44, y = H * v;
+      ctx.beginPath(); ctx.arc(x, y, Math.min(W, H) * 0.004, 0, 7); ctx.fill();
+    }
+  } else {
+    ctx.fillStyle = '#1e2228'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#8b8f96';
+    ctx.fillRect(W * 0.3 + wob(0.04, W * 0.12, 0), H * 0.4, W * 0.22, H * 0.2);
+  }
+}
+
 resize();
-if (location.search.includes('test')){              // headless-verification hook
-  testMode = true;
+if (P.has('test')) {
+  testMode = P.get('test') || 'face';
   document.getElementById('start').style.display = 'none';
-  running = true;
-  requestAnimationFrame(step);
+  if (P.has('frames')) {
+    testFrames = Math.max(1, parseInt(P.get('frames'), 10) || 1);
+    runTestBatch();                              // synchronous: no rAF needed
+  } else {
+    running = true;
+    requestAnimationFrame(loop);
+  }
 }
 </script>
 

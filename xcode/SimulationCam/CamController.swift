@@ -27,11 +27,11 @@ final class CamController: ObservableObject {
     private var wasLive = false
 
     init() {
-        scene.onResize = { [weak self] gridHeight in
-            self?.feed.setGridHeight(gridHeight)
+        scene.onResize = { [weak self] gw, gh in
+            self?.feed.setGrid(width: gw, height: gh)
         }
-        feed.onGrid = { [weak self] grid in
-            DispatchQueue.main.async { self?.scene.ingest(grid: grid) }
+        feed.onFrame = { [weak self] frame in
+            DispatchQueue.main.async { self?.scene.ingest(frame: frame) }
         }
     }
 

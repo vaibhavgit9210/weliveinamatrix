@@ -1,9 +1,37 @@
 # simulation-cam
 
-Single-file webcam toy (`index.html`): fake object-tracker overlay ("we live in a simulation" aesthetic) — frame-differencing motion detection spawns incrementing ID labels/boxes/link-lines that follow movement.
+Single-file webcam toy (`index.html`) + a native iOS/macOS app (`xcode/`): a fake object-tracker overlay ("we live in a simulation" aesthetic). **It tracks one class of subject per frame and never marks anything outside it** — see the pipeline below.
 
-- Git repo → `git@github-personal:vaibhavgit9210/weliveinamatrix.git`, also live at https://vaibhavgit9210.github.io/weliveinamatrix/ via gh-pages.
-- Deployed as a copy inside `../portfolio-site/simulation-cam/` (live at https://vaibhavgit9210.github.io/simulation-cam/, linked from the arcade page); **this folder is the source of truth** — re-copy after edits.
-- `?test` renders a synthetic moving pattern instead of the camera for headless screenshots.
-- **Native app in `xcode/`** (`SimulationCam`, single multiplatform target, iOS 16 / macOS 13, SwiftUI + AVFoundation + SpriteKit, no packages, hand-written `project.pbxproj` + shared scheme). Camera flip button lives bottom-right and hides itself unless the device has both cameras. Rotation and mirroring are set on the capture connections (preview *and* data output get the same values) so the overlay can never drift out of register with the picture; the sampler only handles the centre crop. Overlay is two textures — a white pixel and a 10-digit strip — so 450 labels batch into a couple of draw calls. **Unlike `bonfire`, this port is not numerically identical to the web build**: `index.html` uses unseedable `Math.random`, so parity was checked on behaviour and distributions (kind mix 0.78/0.17/0.04 vs the web's 0.78/0.18/0.04) rather than on checksums. macOS needs `com.apple.security.device.camera` because hardened runtime is on. **This machine has only Command Line Tools, no Xcode** — sources typecheck against the macOS SDK, the sim and the frame-to-grid mapping were compiled and run against synthetic frames, and the overlay was rendered offscreen through `SKRenderer` for a look, but the project has never been opened in Xcode or built with `xcodebuild`. See `xcode/README.md`.
-- `tools/make_icon.py` regenerates the app icon (needs pillow, uses `/System/Library/Fonts/Supplemental/Arial Narrow.ttf`). Opaque RGB at every size, since iOS rejects icons with alpha.
+- Git repo → `git@github-personal:vaibhavgit9210/weliveinamatrix.git`, live at https://vaibhavgit9210.github.io/weliveinamatrix/ via gh-pages (push BOTH `main` and `main:gh-pages`).
+- Deployed as a copy inside `../portfolio-site/simulation-cam/` (live at https://vaibhavgit9210.github.io/simulation-cam/, linked from the arcade page); **this folder is the source of truth** — re-copy after edits, and push portfolio-site too or the arcade copy goes stale.
+
+## The pipeline (kept identical in `index.html` and `xcode/SimulationCam/TrackerSim.swift`)
+
+Both builds carry the same constants block (`CFG`). **If you change a threshold, change it in both.**
+
+1. Frame → luminance grid + **skin mask** (Chai & Ngan chroma box; chroma, so it survives different skin tones). Web reads RGB off its canvas; iOS gets Y and CbCr planes free from `420f`; macOS computes both from BGRA.
+2. Motion by frame differencing with neighbour confirmation; a separate light pass finds cells that are bright **and** smooth.
+3. Connected components at **two scales**: motes off the *raw* motion mask, subject masses off a mask dilated twice. (One bee dilated by two cells is 7 cells — neither mote nor subject — and used to vanish from the classifier entirely.)
+4. **Skin is found without motion.** A still face barely differences; locking the hand because it moved was the original bug.
+5. **Grains are found without motion too** (summed-area local-mean contrast), so slow ants and hanging dust still register. Capped by area and count so a brick wall is not a swarm.
+6. Mode priority: `living` → `beam` → `swarm` → `object` → `none`. Dust vs insects is decided by whether the small movers sit *inside* the beam. Mode changes are debounced 3 frames and **wipe** the old locks.
+7. Tracking: greedy nearest match, EMA easing onto the measurement, duplicate-overlap cull, persistent ids that only count up.
+8. The numeric flood is penned inside the locks (or the beam mask), density ∝ `chaos`.
+
+## Gotchas that cost time here
+
+- **A beam must be long, thin AND bright against darkness.** Without `beamElong`/`beamContrast`/`beamAreaMax`, a white wall in portrait, a lit window, or a bright block all classified as `TYNDALL`. Verified by tests in both builds.
+- **Ink adapts to the frame** (`ink()` in JS, `colour(at:)` in Swift): white labels are invisible on a bright beam or a pale wall, so each mark's ink comes from the luminance under it.
+- **Grid size follows a cell budget** (~30k cells), not a fixed 176 width — a tall phone frame would otherwise be 67k cells and four component passes too expensive. Both builds share `CFG.cellBudget`.
+- Mode hysteresis means `mode` can outlive `state.beam`; the beam spawn/draw paths must guard for it (that was a null-deref crash in the web build).
+- Headless Chrome wipes the canvas with a late resize, so `resize()` replays the synchronous test batch — otherwise every screenshot is black.
+
+## Test hooks
+
+Web: `?test=face|swarm|beam|object`, `&frames=N` (synchronous, screenshot-friendly), `&seed=N`. Perf measured at 1.3–2.9 ms/frame per mode on this Mac.
+
+Native: no Xcode on this machine, so verification is a `swiftc` harness (36 checks: grid budget, crop/mirror mapping, skin vs warm beam vs grey wall, BGRA vs biplanar agreement, one lock per face + hand with the right class names, flood contained, swarm counts, beam exclusivity, class-change wipe, seed reproducibility) plus an `SKRenderer` offscreen render of all four modes compared against the web screenshots by eye.
+
+## Native app in `xcode/`
+
+`SimulationCam`, single multiplatform target, iOS 16 / macOS 13, SwiftUI + AVFoundation + SpriteKit, no packages, hand-written `project.pbxproj` + shared scheme. Camera flip button bottom-right, hidden unless the device has both cameras. Rotation/mirroring are set on **both** capture connections so the overlay cannot drift off the picture. Overlay batches out of two textures (white pixel + a glyph strip that now includes A–Z for the class labels and the readout). macOS needs `com.apple.security.device.camera` (hardened runtime). Icon generated by `tools/make_icon.py`. See `xcode/README.md`.

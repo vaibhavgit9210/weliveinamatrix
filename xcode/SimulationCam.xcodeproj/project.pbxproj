@@ -1,0 +1,303 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		09D48EB38C5AE697788D494A /* SimulationCamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0DAAB2AD5254EB86DBFF65A /* SimulationCamApp.swift */; };
+		0C8AEEDF82427D6CD9405C11 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E46253E6C795F5F0B0BF1059 /* ContentView.swift */; };
+		04A34A2DCAC3CEC60AB02313 /* CameraPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA6C6B23FA1F6E4A4A3DDDB /* CameraPreview.swift */; };
+		F9D9A3CD6A66E032A9A33521 /* CamController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1167804F4A59FDBDC7C2CF /* CamController.swift */; };
+		5D375B285EF1AEE38C221E8D /* CameraFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC7D322FEB4095F63635F36 /* CameraFeed.swift */; };
+		0397B492EE61FC00C042A50B /* TrackerScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = D92905B24254563DC49E776C /* TrackerScene.swift */; };
+		EB1D5F009EC9C424C01B5D3B /* TrackerSim.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E5AFEDEB56D088E2019EBDE /* TrackerSim.swift */; };
+		CA3368B2AC6A32D3FBEA5353 /* Glyphs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16724F2C8A9BF923C8741A24 /* Glyphs.swift */; };
+		3E6810A9A482FD2D99710E69 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8B4A0C70E307C41BDB93B8DD /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		30CCF131E2962614BAC84D4E /* SimulationCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SimulationCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E0DAAB2AD5254EB86DBFF65A /* SimulationCamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationCamApp.swift; sourceTree = "<group>"; };
+		E46253E6C795F5F0B0BF1059 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		DEA6C6B23FA1F6E4A4A3DDDB /* CameraPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreview.swift; sourceTree = "<group>"; };
+		DD1167804F4A59FDBDC7C2CF /* CamController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CamController.swift; sourceTree = "<group>"; };
+		4EC7D322FEB4095F63635F36 /* CameraFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraFeed.swift; sourceTree = "<group>"; };
+		D92905B24254563DC49E776C /* TrackerScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerScene.swift; sourceTree = "<group>"; };
+		7E5AFEDEB56D088E2019EBDE /* TrackerSim.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerSim.swift; sourceTree = "<group>"; };
+		16724F2C8A9BF923C8741A24 /* Glyphs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glyphs.swift; sourceTree = "<group>"; };
+		8B4A0C70E307C41BDB93B8DD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		897F68CE953250B589F1E05D /* SimulationCam.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SimulationCam.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7291A57EA290EA13501841A7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		21CE59003A189FD7ED44BE97 = {
+			isa = PBXGroup;
+			children = (
+				163E1ACBFB2761BE2657FEA6 /* SimulationCam */,
+				93B0BDB7283AEE6F71214BA2 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		163E1ACBFB2761BE2657FEA6 /* SimulationCam */ = {
+			isa = PBXGroup;
+			children = (
+				E0DAAB2AD5254EB86DBFF65A /* SimulationCamApp.swift */,
+				E46253E6C795F5F0B0BF1059 /* ContentView.swift */,
+				DEA6C6B23FA1F6E4A4A3DDDB /* CameraPreview.swift */,
+				DD1167804F4A59FDBDC7C2CF /* CamController.swift */,
+				4EC7D322FEB4095F63635F36 /* CameraFeed.swift */,
+				D92905B24254563DC49E776C /* TrackerScene.swift */,
+				7E5AFEDEB56D088E2019EBDE /* TrackerSim.swift */,
+				16724F2C8A9BF923C8741A24 /* Glyphs.swift */,
+				8B4A0C70E307C41BDB93B8DD /* Assets.xcassets */,
+				897F68CE953250B589F1E05D /* SimulationCam.entitlements */,
+			);
+			path = SimulationCam;
+			sourceTree = "<group>";
+		};
+		93B0BDB7283AEE6F71214BA2 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				30CCF131E2962614BAC84D4E /* SimulationCam.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		08924700D9D3DCA01196F812 /* SimulationCam */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A34011BE266B307D2A9DCCB7 /* Build configuration list for PBXNativeTarget "SimulationCam" */;
+			buildPhases = (
+				EF33DF6A82CF50621FC5F60E /* Sources */,
+				7291A57EA290EA13501841A7 /* Frameworks */,
+				796FCE4170A0E9F36E83D3CF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SimulationCam;
+			productName = SimulationCam;
+			productReference = 30CCF131E2962614BAC84D4E /* SimulationCam.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2FDA70D57C71D7C4E0DC4842 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					08924700D9D3DCA01196F812 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = C07AABFCC02B9CBFC92BB949 /* Build configuration list for PBXProject "SimulationCam" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 21CE59003A189FD7ED44BE97;
+			productRefGroup = 93B0BDB7283AEE6F71214BA2 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				08924700D9D3DCA01196F812 /* SimulationCam */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		796FCE4170A0E9F36E83D3CF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3E6810A9A482FD2D99710E69 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		EF33DF6A82CF50621FC5F60E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				09D48EB38C5AE697788D494A /* SimulationCamApp.swift in Sources */,
+				0C8AEEDF82427D6CD9405C11 /* ContentView.swift in Sources */,
+				04A34A2DCAC3CEC60AB02313 /* CameraPreview.swift in Sources */,
+				F9D9A3CD6A66E032A9A33521 /* CamController.swift in Sources */,
+				5D375B285EF1AEE38C221E8D /* CameraFeed.swift in Sources */,
+				0397B492EE61FC00C042A50B /* TrackerScene.swift in Sources */,
+				EB1D5F009EC9C424C01B5D3B /* TrackerSim.swift in Sources */,
+				CA3368B2AC6A32D3FBEA5353 /* Glyphs.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		FBECE2AC0F8DEE24B04B027B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_FAST_MATH = YES;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		0FA169367ED65B800685879A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_FAST_MATH = YES;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		277FAC38B7E241E0CF2EF3DD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = SimulationCam/SimulationCam.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Simulation cam draws a tracking overlay over the live camera picture. Nothing is recorded and nothing leaves your device.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.vaibhavkumar.simulationcam;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B24478AE919E398495A1DBB4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = SimulationCam/SimulationCam.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Simulation cam draws a tracking overlay over the live camera picture. Nothing is recorded and nothing leaves your device.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.vaibhavkumar.simulationcam;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C07AABFCC02B9CBFC92BB949 /* Build configuration list for PBXProject "SimulationCam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FBECE2AC0F8DEE24B04B027B /* Debug */,
+				0FA169367ED65B800685879A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A34011BE266B307D2A9DCCB7 /* Build configuration list for PBXNativeTarget "SimulationCam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				277FAC38B7E241E0CF2EF3DD /* Debug */,
+				B24478AE919E398495A1DBB4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 2FDA70D57C71D7C4E0DC4842 /* Project object */;
+}

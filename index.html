@@ -849,7 +849,7 @@ async function openCam() {
   const errBox = document.getElementById('err');
   errBox.textContent = '';
   try {
-    if (!navigator.mediaDevices) throw new Error('camera API unavailable — open this page over https or file://, not plain http');
+    if (!navigator.mediaDevices) throw new Error('camera API unavailable: open this page over https or file://, not plain http');
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({
       video: {facingMode: facing, width: {ideal: 1280}, height: {ideal: 720}}, audio: false
